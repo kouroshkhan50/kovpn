@@ -16,26 +16,59 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.*
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -48,8 +81,6 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlin.math.cos
-import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -91,9 +122,8 @@ private val LightColors = lightColorScheme(
 
 @Composable
 private fun TowerScoutTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
     MaterialTheme(
-        colorScheme = if (dark) DarkColors else LightColors,
+        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
         content = content
     )
 }
@@ -106,8 +136,7 @@ private data class SignalSnapshot(
     val operator: String = "—",
     val connection: String = "—",
     val cellInfo: String = "—",
-    val readError: String? = null,
-    val timestamp: Long = System.currentTimeMillis()
+    val readError: String? = null
 )
 
 private data class SavedPoint(
@@ -122,11 +151,11 @@ private data class SpeedState(
     val message: String = "آزمونی انجام نشده"
 )
 
-private enum class Tab(val title: String) {
-    Dashboard("وضعیت"),
-    Optimize("بهینه‌سازی"),
-    Tools("ابزارها"),
-    Device("گوشی")
+private enum class Tab(val title: String, val icon: String) {
+    Dashboard("وضعیت", "◉"),
+    Optimize("بهینه‌سازی", "⚡"),
+    Tools("ابزارها", "🛠"),
+    Device("گوشی", "📱")
 }
 
 // ---------- صفحهٔ اصلی ----------
@@ -174,6 +203,14 @@ private fun TowerScoutApp() {
         }
     }
 
+    // پیام کوتاه: با تغییر toast، تایمر ریست می‌شود
+    LaunchedEffect(toast) {
+        if (toast != null) {
+            delay(1500)
+            toast = null
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -195,11 +232,11 @@ private fun TowerScoutApp() {
         },
         bottomBar = {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                Tab.values().forEach { item ->
+                Tab.entries.forEach { item ->
                     NavigationBarItem(
                         selected = tab == item,
                         onClick = { tab = item },
-                        icon = { Text(tabIcon(item), fontSize = 18.sp) },
+                        icon = { Text(item.icon, fontSize = 18.sp) },
                         label = { Text(item.title) }
                     )
                 }
@@ -233,10 +270,6 @@ private fun TowerScoutApp() {
             }
 
             toast?.let {
-                LaunchedEffect(it) {
-                    delay(1500)
-                    toast = null
-                }
                 Surface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -253,13 +286,6 @@ private fun TowerScoutApp() {
             }
         }
     }
-}
-
-private fun tabIcon(tab: Tab): String = when (tab) {
-    Tab.Dashboard -> "◉"
-    Tab.Optimize -> "⚡"
-    Tab.Tools -> "🛠"
-    Tab.Device -> "📱"
 }
 
 // ---------- صفحهٔ وضعیت ----------
@@ -282,7 +308,11 @@ private fun DashboardScreen(snapshot: SignalSnapshot, history: List<Int>) {
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             InfoCard("اپراتور", snapshot.operator, Modifier.weight(1f))
-            InfoCard("کیفیت", snapshot.signalDbm?.let(::qualityLabel) ?: "نامشخص", Modifier.weight(1f))
+            InfoCard(
+                "کیفیت",
+                snapshot.signalDbm?.let { qualityLabel(it) } ?: "نامشخص",
+                Modifier.weight(1f)
+            )
         }
 
         Card(
@@ -304,7 +334,7 @@ private fun DashboardScreen(snapshot: SignalSnapshot, history: List<Int>) {
                 ),
                 shape = RoundedCornerShape(16.dp)
             ) {
-                Text(it, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
+                Text(it, modifier = Modifier.padding(14.dp))
             }
         }
     }
@@ -318,7 +348,7 @@ private fun SignalGauge(dbm: Int?) {
         animationSpec = tween(900, easing = FastOutSlowInEasing),
         label = "gauge"
     )
-    val color = dbm?.let(::qualityColor) ?: MaterialTheme.colorScheme.onSurfaceVariant
+    val color = dbm?.let { qualityColor(it) } ?: MaterialTheme.colorScheme.onSurfaceVariant
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -349,7 +379,7 @@ private fun SignalGauge(dbm: Int?) {
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = dbm?.let { "$it" } ?: "--",
+                        text = dbm?.toString() ?: "--",
                         fontSize = 44.sp,
                         fontWeight = FontWeight.Bold,
                         color = color
@@ -359,7 +389,7 @@ private fun SignalGauge(dbm: Int?) {
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                dbm?.let(::qualityLabel) ?: "در انتظار داده",
+                dbm?.let { qualityLabel(it) } ?: "در انتظار داده",
                 fontWeight = FontWeight.SemiBold,
                 color = color
             )
@@ -395,7 +425,11 @@ private fun InfoCard(title: String, value: String, modifier: Modifier = Modifier
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(4.dp))
             Text(value, fontWeight = FontWeight.SemiBold, maxLines = 2)
         }
@@ -411,7 +445,8 @@ private fun OptimizeScreen(
     onSavePoint: () -> Unit,
     onClear: () -> Unit
 ) {
-    val advice = remember(snapshot.signalDbm) { adviceFor(snapshot.signalDbm) }
+    val advice = adviceFor(snapshot.signalDbm)
+    val best = points.maxByOrNull { it.dbm ?: Int.MIN_VALUE }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -459,21 +494,20 @@ private fun OptimizeScreen(
             }
         }
 
-        val best = points.maxByOrNull { it.dbm ?: Int.MIN_VALUE }
         items(points) { p ->
             val isBest = p == best && p.dbm != null
             Card(
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = if (isBest) MaterialTheme.colorScheme.secondary.copy(alpha = 0.18f)
-                    else MaterialTheme.colorScheme.surface
+                    containerColor = if (isBest) {
+                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.18f)
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    }
                 ),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Row(
-                    Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(p.time, fontWeight = FontWeight.SemiBold)
                         Text(p.network, style = MaterialTheme.typography.bodySmall)
@@ -481,11 +515,16 @@ private fun OptimizeScreen(
                     Text(
                         p.dbm?.let { "$it dBm" } ?: "—",
                         fontWeight = FontWeight.Bold,
-                        color = p.dbm?.let(::qualityColor) ?: MaterialTheme.colorScheme.onSurfaceVariant
+                        color = p.dbm?.let { qualityColor(it) }
+                            ?: MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (isBest) {
                         Spacer(Modifier.width(8.dp))
-                        Text("★ بهترین", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+                        Text(
+                            "★ بهترین",
+                            color = MaterialTheme.colorScheme.secondary,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -524,6 +563,13 @@ private fun ToolsScreen(
     onStartSpeed: () -> Unit,
     onOpenSettings: (String) -> Unit
 ) {
+    val shortcuts = listOf(
+        "اینترنت و شبکه" to Settings.ACTION_WIRELESS_SETTINGS,
+        "شبکهٔ موبایل" to Settings.ACTION_DATA_ROAMING_SETTINGS,
+        "Wi‑Fi" to Settings.ACTION_WIFI_SETTINGS,
+        "محدودیت باتری" to Settings.ACTION_BATTERY_SAVER_SETTINGS
+    )
+
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -558,21 +604,18 @@ private fun ToolsScreen(
             }
         }
 
-        item { Text("میانبرهای تنظیمات", fontWeight = FontWeight.Bold, fontSize = 18.sp) }
+        item {
+            Text("میانبرهای تنظیمات", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        }
 
-        items(
-            listOf(
-                "اینترنت و شبکه" to Settings.ACTION_WIRELESS_SETTINGS,
-                "شبکهٔ موبایل" to Settings.ACTION_DATA_ROAMING_SETTINGS,
-                "Wi‑Fi" to Settings.ACTION_WIFI_SETTINGS,
-                "محدودیت باتری" to Settings.ACTION_BATTERY_SAVER_SETTINGS
-            )
-        ) { (label, action) ->
+        items(shortcuts) { (label, action) ->
             OutlinedButton(
                 onClick = { onOpenSettings(action) },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp)
-            ) { Text(label) }
+            ) {
+                Text(label)
+            }
         }
     }
 }
@@ -612,7 +655,8 @@ private fun DeviceScreen(context: Context) {
 @Suppress("MissingPermission")
 private fun readSnapshot(context: Context): SignalSnapshot {
     val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-    val operator = runCatching { telephony.networkOperatorName }.getOrNull().orEmpty().ifBlank { "نامشخص" }
+    val operator = runCatching { telephony.networkOperatorName }
+        .getOrNull().orEmpty().ifBlank { "نامشخص" }
 
     val networkType = runCatching {
         when (telephony.dataNetworkType) {
@@ -634,20 +678,21 @@ private fun readSnapshot(context: Context): SignalSnapshot {
     var error: String? = null
 
     try {
-        if (!hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) &&
-            !hasPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
-        ) {
+        val hasLocation =
+            hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ||
+                hasPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
+
+        if (!hasLocation) {
             error = "برای خواندن قدرت سیگنال سلولی، مجوز موقعیت را بدهید."
         } else {
             val cells: List<CellInfo> = telephony.allCellInfo.orEmpty()
             val registered = cells.filter { it.isRegistered }
             val pool = registered.ifEmpty { cells }
-            dbm = pool.mapNotNull { runCatching { it.cellSignalStrength.dbm }.getOrNull() }
+            dbm = pool
+                .mapNotNull { runCatching { it.cellSignalStrength.dbm }.getOrNull() }
                 .filter { it < 0 }
                 .maxOrNull()
-            cellText = pool.firstOrNull()?.javaClass?.simpleName
-                ?.removePrefix("CellInfo")
-                ?: "—"
+            cellText = pool.firstOrNull()?.javaClass?.simpleName?.removePrefix("CellInfo") ?: "—"
         }
     } catch (_: SecurityException) {
         error = "دسترسی توسط سیستم محدود شده است."
@@ -668,7 +713,7 @@ private fun readSnapshot(context: Context): SignalSnapshot {
 private fun hasPermission(context: Context, permission: String) =
     ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
-private fun qualityLabel(dbm: Int) = when {
+private fun qualityLabel(dbm: Int): String = when {
     dbm >= -80 -> "عالی"
     dbm >= -90 -> "خوب"
     dbm >= -100 -> "متوسط"
@@ -700,7 +745,9 @@ private fun openSettings(context: Context, action: String) {
     runCatching {
         context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }.onFailure {
-        context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        context.startActivity(
+            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }
 
@@ -725,14 +772,16 @@ private suspend fun runSpeedTest(): SpeedState = withContext(Dispatchers.IO) {
             }
         }
         val seconds = ((SystemClock.elapsedRealtime() - start).coerceAtLeast(1)) / 1000.0
-        val mbps = total * 8.0 / seconds / 1_000_000.0
         SpeedState(
             running = false,
-            mbps = mbps,
-            message = "آزمون کامل شد (${(total / 1_000_000)} MB)"
+            mbps = total * 8.0 / seconds / 1_000_000.0,
+            message = "آزمون کامل شد (${total / 1_000_000} MB)"
         )
     } catch (e: Exception) {
-        SpeedState(running = false, message = "آزمون انجام نشد: ${e.localizedMessage ?: "اتصال را بررسی کنید"}")
+        SpeedState(
+            running = false,
+            message = "آزمون انجام نشد: ${e.localizedMessage ?: "اتصال را بررسی کنید"}"
+        )
     } finally {
         connection?.disconnect()
     }
