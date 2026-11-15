@@ -16,27 +16,28 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -44,322 +45,618 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
-import kotlin.math.roundToInt
+import kotlin.math.cos
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    TowerScoutScreen()
-                }
+            TowerScoutTheme {
+                TowerScoutApp()
             }
         }
     }
 }
 
+// ---------- تم ----------
+
+private val DarkColors = darkColorScheme(
+    primary = Color(0xFF38BDF8),
+    secondary = Color(0xFF22C55E),
+    tertiary = Color(0xFFF59E0B),
+    background = Color(0xFF0B1120),
+    surface = Color(0xFF111A2E),
+    surfaceVariant = Color(0xFF1B2740),
+    onBackground = Color(0xFFE2E8F0),
+    onSurface = Color(0xFFE2E8F0),
+    onSurfaceVariant = Color(0xFF94A3B8),
+    error = Color(0xFFF87171)
+)
+
+private val LightColors = lightColorScheme(
+    primary = Color(0xFF0284C7),
+    secondary = Color(0xFF16A34A),
+    tertiary = Color(0xFFD97706),
+    background = Color(0xFFF1F5F9),
+    surface = Color.White,
+    surfaceVariant = Color(0xFFE2E8F0),
+    onBackground = Color(0xFF0F172A),
+    onSurface = Color(0xFF0F172A),
+    onSurfaceVariant = Color(0xFF475569)
+)
+
+@Composable
+private fun TowerScoutTheme(content: @Composable () -> Unit) {
+    val dark = isSystemInDarkTheme()
+    MaterialTheme(
+        colorScheme = if (dark) DarkColors else LightColors,
+        content = content
+    )
+}
+
+// ---------- مدل داده ----------
+
 private data class SignalSnapshot(
-    val signalDbm: Int?,
-    val networkType: String,
-    val operator: String,
-    val connection: String,
-    val cellInfo: String,
-    val readError: String? = null
+    val signalDbm: Int? = null,
+    val networkType: String = "—",
+    val operator: String = "—",
+    val connection: String = "—",
+    val cellInfo: String = "—",
+    val readError: String? = null,
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 private data class SavedPoint(
     val time: String,
-    val signal: String,
+    val dbm: Int?,
     val network: String
 )
 
+private data class SpeedState(
+    val running: Boolean = false,
+    val mbps: Double? = null,
+    val message: String = "آزمونی انجام نشده"
+)
+
+private enum class Tab(val title: String) {
+    Dashboard("وضعیت"),
+    Optimize("بهینه‌سازی"),
+    Tools("ابزارها"),
+    Device("گوشی")
+}
+
+// ---------- صفحهٔ اصلی ----------
+
 @Composable
-private fun TowerScoutScreen() {
+private fun TowerScoutApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var snapshot by remember {
-        mutableStateOf(
-            SignalSnapshot(null, "در حال خواندن…", "—", "—", "—")
-        )
-    }
-    var savedPoints by remember { mutableStateOf(listOf<SavedPoint>()) }
-    var speedText by remember { mutableStateOf("هنوز آزمونی انجام نشده") }
-    var speedRunning by remember { mutableStateOf(false) }
-    var statusText by remember { mutableStateOf("برای اطلاعات سلولی، مجوزهای لازم را بدهید.") }
+    var tab by remember { mutableStateOf(Tab.Dashboard) }
+    var snapshot by remember { mutableStateOf(SignalSnapshot()) }
+    val history = remember { mutableStateListOf<Int>() }
+    val points = remember { mutableStateListOf<SavedPoint>() }
+    var speed by remember { mutableStateOf(SpeedState()) }
+    var toast by remember { mutableStateOf<String?>(null) }
 
-    val neededPermissions = remember {
-        mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.READ_PHONE_STATE
-        ).apply {
-            if (Build.VERSION.SDK_INT >= 33) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
-            }
+    val permissions = remember {
+        buildList {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
+            add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            add(Manifest.permission.READ_PHONE_STATE)
+            if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
         }.toTypedArray()
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        statusText = if (
-            results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        ) {
-            "مجوز موقعیت داده شد. اطلاعات شبکه در دسترس را می‌خوانم."
-        } else {
-            "بدون مجوز موقعیت، اطلاعات بعضی سلول‌ها نمایش داده نمی‌شود."
-        }
+    ) {
         snapshot = readSnapshot(context)
     }
 
-    // تازه‌سازی دوره‌ای؛ محدودیت‌های دستگاه/اپراتور ممکن است داده را با تأخیر بدهند.
     LaunchedEffect(Unit) {
+        val missing = permissions.any {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing) permissionLauncher.launch(permissions)
+
         while (true) {
             snapshot = readSnapshot(context)
-            delay(2500)
+            snapshot.signalDbm?.let {
+                history.add(it)
+                if (history.size > 40) history.removeAt(0)
+            }
+            delay(2000)
         }
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Text("TowerScout", style = MaterialTheme.typography.headlineMedium)
-            Text("پایش و بهینه‌سازی امن اتصال")
-        }
-
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("وضعیت زنده", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(8.dp))
-                    Text("قدرت سیگنال: ${snapshot.signalDbm?.let { "$it dBm" } ?: "در دسترس نیست"}")
-                    Text("کیفیت تقریبی: ${snapshot.signalDbm?.let(::signalLabel) ?: "نامشخص"}")
-                    Text("شبکهٔ موبایل: ${snapshot.networkType}")
-                    Text("اپراتور: ${snapshot.operator}")
-                    Text("اتصال اینترنت: ${snapshot.connection}")
-                    Text("اطلاعات سلول: ${snapshot.cellInfo}")
-                    snapshot.readError?.let { Text("یادداشت: $it") }
-                }
-            }
-        }
-
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    permissionLauncher.launch(neededPermissions)
-                }) {
-                    Text("مجوزها / تازه‌سازی")
-                }
-                OutlinedButton(onClick = {
-                    snapshot = readSnapshot(context)
-                    statusText = "اطلاعات به‌روزرسانی شد."
-                }) {
-                    Text("اکنون بررسی کن")
-                }
-            }
-            Text(statusText, style = MaterialTheme.typography.bodySmall)
-        }
-
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("بهینه‌سازی اتصال", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(8.dp))
-                    Text("• برای مقایسهٔ نقاط، در هر محل چند ثانیه صبر کنید و سیگنال را ثبت کنید.")
-                    Text("• نزدیک پنجره یا فضای باز امتحان کنید؛ موانع فلزی و دیوار ضخیم سیگنال را کم می‌کنند.")
-                    Text("• حالت هواپیما را حدود ۱۰ ثانیه روشن و سپس خاموش کنید تا اتصال دوباره برقرار شود.")
-                    Text("• برای دانلود، Wi‑Fi پایدار یا شبکهٔ موبایلی با سیگنال بهتر را انتخاب کنید.")
-                    Text("• VPN را فقط اگر لازم نیست خاموش کنید؛ برنامه نمی‌تواند تنظیمات مودم یا دکل را اجباراً عوض کند.")
-                }
-            }
-        }
-
-        item {
-            Text("میانبرهای تنظیمات", style = MaterialTheme.typography.titleLarge)
-        }
-
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { openSettings(context, Settings.ACTION_WIRELESS_SETTINGS) }
-                ) { Text("تنظیمات اینترنت و شبکه") }
-
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { openSettings(context, Settings.ACTION_DATA_ROAMING_SETTINGS) }
-                ) { Text("تنظیمات شبکهٔ موبایل") }
-
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { openSettings(context, Settings.ACTION_WIFI_SETTINGS) }
-                ) { Text("تنظیمات Wi‑Fi") }
-
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { openSettings(context, Settings.ACTION_BATTERY_SAVER_SETTINGS) }
-                ) { Text("تنظیمات باتری؛ بررسی محدودیت پس‌زمینه") }
-            }
-        }
-
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("اطلاعات گوشی", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(8.dp))
-                    Text("سازنده: ${Build.MANUFACTURER}")
-                    Text("مدل: ${Build.MODEL}")
-                    Text("نسخهٔ اندروید: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-                    Text("دستگاه: ${Build.DEVICE}")
-                    Text("شناسهٔ محصول: ${Build.PRODUCT}")
-                    Text("نوع ارتباط اینترنت: ${getConnectionType(context)}")
-                }
-            }
-        }
-
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("آزمون دانلود", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(6.dp))
-                    Text("آزمون کوتاه و تقریبی است و از اینترنت موبایل یا Wi‑Fi داده مصرف می‌کند.")
-                    Spacer(Modifier.height(8.dp))
-                    Button(
-                        enabled = !speedRunning,
-                        onClick = {
-                            scope.launch {
-                                speedRunning = true
-                                speedText = "در حال آزمون…"
-                                speedText = runDownloadTest()
-                                speedRunning = false
-                            }
-                        }
-                    ) {
-                        Text(if (speedRunning) "در حال آزمون…" else "شروع آزمون")
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("TowerScout", fontWeight = FontWeight.Bold)
+                        Text(
+                            tab.title,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                    Text(speedText)
-                }
-            }
-        }
-
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    val signal = snapshot.signalDbm?.let { "$it dBm" } ?: "نامشخص"
-                    val time = java.text.SimpleDateFormat(
-                        "HH:mm:ss",
-                        Locale.getDefault()
-                    ).format(java.util.Date())
-                    savedPoints = listOf(
-                        SavedPoint(time, signal, snapshot.networkType)
-                    ) + savedPoints
-                    statusText = "نقطهٔ فعلی ثبت شد؛ برای مقایسه در محل‌های دیگر تکرار کنید."
-                }) {
-                    Text("ثبت این نقطه")
-                }
-
-                OutlinedButton(onClick = { savedPoints = emptyList() }) {
-                    Text("پاک‌کردن نقاط")
-                }
-            }
-        }
-
-        if (savedPoints.isNotEmpty()) {
-            item {
-                Text("نقاط ثبت‌شده", style = MaterialTheme.typography.titleLarge)
-            }
-            items(savedPoints) { point ->
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        "${point.time}  •  ${point.signal}  •  ${point.network}",
-                        modifier = Modifier.padding(12.dp)
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                )
+            )
+        },
+        bottomBar = {
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+                Tab.values().forEach { item ->
+                    NavigationBarItem(
+                        selected = tab == item,
+                        onClick = { tab = item },
+                        icon = { Text(tabIcon(item), fontSize = 18.sp) },
+                        label = { Text(item.title) }
                     )
                 }
             }
         }
+    ) { padding ->
+        Box(Modifier.padding(padding).fillMaxSize()) {
+            when (tab) {
+                Tab.Dashboard -> DashboardScreen(snapshot, history)
+                Tab.Optimize -> OptimizeScreen(
+                    snapshot = snapshot,
+                    points = points,
+                    onSavePoint = {
+                        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                        points.add(0, SavedPoint(time, snapshot.signalDbm, snapshot.networkType))
+                        toast = "نقطه ثبت شد"
+                    },
+                    onClear = { points.clear() }
+                )
+                Tab.Tools -> ToolsScreen(
+                    speed = speed,
+                    onStartSpeed = {
+                        scope.launch {
+                            speed = SpeedState(running = true, message = "در حال آزمون…")
+                            speed = runSpeedTest()
+                        }
+                    },
+                    onOpenSettings = { action -> openSettings(context, action) }
+                )
+                Tab.Device -> DeviceScreen(context)
+            }
 
-        item {
+            toast?.let {
+                LaunchedEffect(it) {
+                    delay(1500)
+                    toast = null
+                }
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(24.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.primary
+                ) {
+                    Text(
+                        it,
+                        modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
+                        color = Color.White
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun tabIcon(tab: Tab): String = when (tab) {
+    Tab.Dashboard -> "◉"
+    Tab.Optimize -> "⚡"
+    Tab.Tools -> "🛠"
+    Tab.Device -> "📱"
+}
+
+// ---------- صفحهٔ وضعیت ----------
+
+@Composable
+private fun DashboardScreen(snapshot: SignalSnapshot, history: List<Int>) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        SignalGauge(snapshot.signalDbm)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            InfoCard("شبکه", snapshot.networkType, Modifier.weight(1f))
+            InfoCard("اتصال", snapshot.connection, Modifier.weight(1f))
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            InfoCard("اپراتور", snapshot.operator, Modifier.weight(1f))
+            InfoCard("کیفیت", snapshot.signalDbm?.let(::qualityLabel) ?: "نامشخص", Modifier.weight(1f))
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("نمودار زندهٔ سیگنال", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(10.dp))
+                SignalChart(history, Modifier.fillMaxWidth().height(140.dp))
+            }
+        }
+
+        snapshot.readError?.let {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                ),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text(it, modifier = Modifier.padding(14.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignalGauge(dbm: Int?) {
+    val target = dbm?.let { ((it + 120) / 70f).coerceIn(0f, 1f) } ?: 0f
+    val progress by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(900, easing = FastOutSlowInEasing),
+        label = "gauge"
+    )
+    val color = dbm?.let(::qualityColor) ?: MaterialTheme.colorScheme.onSurfaceVariant
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.size(200.dp)) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val stroke = 22f
+                    drawArc(
+                        color = Color.Gray.copy(alpha = 0.2f),
+                        startAngle = 135f,
+                        sweepAngle = 270f,
+                        useCenter = false,
+                        style = Stroke(stroke, cap = StrokeCap.Round)
+                    )
+                    drawArc(
+                        brush = Brush.sweepGradient(listOf(color.copy(alpha = 0.4f), color)),
+                        startAngle = 135f,
+                        sweepAngle = 270f * progress,
+                        useCenter = false,
+                        style = Stroke(stroke, cap = StrokeCap.Round)
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = dbm?.let { "$it" } ?: "--",
+                        fontSize = 44.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = color
+                    )
+                    Text("dBm", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
-                "دقت داده‌ها به گوشی، اپراتور و نسخهٔ اندروید بستگی دارد. این برنامه دکل را تغییر نمی‌دهد و قدرت مودم را تنظیم نمی‌کند.",
-                style = MaterialTheme.typography.bodySmall
+                dbm?.let(::qualityLabel) ?: "در انتظار داده",
+                fontWeight = FontWeight.SemiBold,
+                color = color
             )
         }
     }
 }
 
+@Composable
+private fun SignalChart(values: List<Int>, modifier: Modifier) {
+    val line = MaterialTheme.colorScheme.primary
+    Canvas(modifier) {
+        if (values.size < 2) return@Canvas
+        val w = size.width
+        val h = size.height
+        val minV = -120f
+        val maxV = -50f
+        val stepX = w / (values.size - 1)
+        var prev: Offset? = null
+        values.forEachIndexed { i, v ->
+            val y = h - ((v - minV) / (maxV - minV)).coerceIn(0f, 1f) * h
+            val p = Offset(i * stepX, y)
+            prev?.let { drawLine(line, it, p, strokeWidth = 5f, cap = StrokeCap.Round) }
+            prev = p
+        }
+    }
+}
+
+@Composable
+private fun InfoCard(title: String, value: String, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(4.dp))
+            Text(value, fontWeight = FontWeight.SemiBold, maxLines = 2)
+        }
+    }
+}
+
+// ---------- بهینه‌سازی ----------
+
+@Composable
+private fun OptimizeScreen(
+    snapshot: SignalSnapshot,
+    points: List<SavedPoint>,
+    onSavePoint: () -> Unit,
+    onClear: () -> Unit
+) {
+    val advice = remember(snapshot.signalDbm) { adviceFor(snapshot.signalDbm) }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("پیشنهاد هوشمند", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(advice, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(onClick = onSavePoint, modifier = Modifier.weight(1f)) {
+                    Text("ثبت این نقطه")
+                }
+                OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f)) {
+                    Text("پاک‌کردن")
+                }
+            }
+        }
+
+        item {
+            Text("مقایسهٔ نقاط", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(
+                "در چند نقطه ثبت کنید و بهترین را برای دانلود انتخاب کنید.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        if (points.isEmpty()) {
+            item {
+                Card(shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text("هنوز نقطه‌ای ثبت نشده است.", modifier = Modifier.padding(16.dp))
+                }
+            }
+        }
+
+        val best = points.maxByOrNull { it.dbm ?: Int.MIN_VALUE }
+        items(points) { p ->
+            val isBest = p == best && p.dbm != null
+            Card(
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = if (isBest) MaterialTheme.colorScheme.secondary.copy(alpha = 0.18f)
+                    else MaterialTheme.colorScheme.surface
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(p.time, fontWeight = FontWeight.SemiBold)
+                        Text(p.network, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text(
+                        p.dbm?.let { "$it dBm" } ?: "—",
+                        fontWeight = FontWeight.Bold,
+                        color = p.dbm?.let(::qualityColor) ?: MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (isBest) {
+                        Spacer(Modifier.width(8.dp))
+                        Text("★ بهترین", color = MaterialTheme.colorScheme.secondary, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        item {
+            Text("نکته‌های کلیدی", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Spacer(Modifier.height(6.dp))
+            listOf(
+                "نزدیک پنجره یا فضای باز بایستید.",
+                "موانع فلزی، آسانسور و زیرزمین سیگنال را ضعیف می‌کنند.",
+                "حالت هواپیما را ۱۰ ثانیه روشن و خاموش کنید تا اتصال تازه شود.",
+                "برای دانلود بزرگ، Wi‑Fi پایدار را ترجیح دهید.",
+                "برنامه‌های پس‌زمینه را ببندید تا پهنای باند آزاد شود."
+            ).forEach {
+                Text("• $it", modifier = Modifier.padding(vertical = 4.dp))
+            }
+        }
+    }
+}
+
+private fun adviceFor(dbm: Int?): String = when {
+    dbm == null -> "برای دریافت پیشنهاد، مجوز موقعیت را بدهید تا قدرت سیگنال خوانده شود."
+    dbm >= -80 -> "سیگنال عالی است؛ همین‌جا برای دانلود مناسب است."
+    dbm >= -90 -> "سیگنال خوب است؛ برای دانلود بزرگ کمی جابه‌جا شوید و نقطه‌های بهتر را مقایسه کنید."
+    dbm >= -100 -> "سیگنال متوسط است؛ نزدیک پنجره بروید یا Wi‑Fi را امتحان کنید."
+    dbm >= -110 -> "سیگنال ضعیف است؛ به فضای باز یا طبقه بالاتر بروید."
+    else -> "سیگنال بسیار ضعیف است؛ دانلود بزرگ را به زمان یا مکان بهتر موکول کنید."
+}
+
+// ---------- ابزارها ----------
+
+@Composable
+private fun ToolsScreen(
+    speed: SpeedState,
+    onStartSpeed: () -> Unit,
+    onOpenSettings: (String) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item {
+            Card(
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("آزمون سرعت دانلود", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        speed.mbps?.let { String.format(Locale.getDefault(), "%.1f", it) } ?: "--",
+                        fontSize = 40.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text("Mbps", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    Text(speed.message, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(12.dp))
+                    Button(onClick = onStartSpeed, enabled = !speed.running) {
+                        if (speed.running) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(if (speed.running) "در حال آزمون" else "شروع آزمون")
+                    }
+                }
+            }
+        }
+
+        item { Text("میانبرهای تنظیمات", fontWeight = FontWeight.Bold, fontSize = 18.sp) }
+
+        items(
+            listOf(
+                "اینترنت و شبکه" to Settings.ACTION_WIRELESS_SETTINGS,
+                "شبکهٔ موبایل" to Settings.ACTION_DATA_ROAMING_SETTINGS,
+                "Wi‑Fi" to Settings.ACTION_WIFI_SETTINGS,
+                "محدودیت باتری" to Settings.ACTION_BATTERY_SAVER_SETTINGS
+            )
+        ) { (label, action) ->
+            OutlinedButton(
+                onClick = { onOpenSettings(action) },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp)
+            ) { Text(label) }
+        }
+    }
+}
+
+// ---------- گوشی ----------
+
+@Composable
+private fun DeviceScreen(context: Context) {
+    val rows = listOf(
+        "سازنده" to Build.MANUFACTURER,
+        "مدل" to Build.MODEL,
+        "دستگاه" to Build.DEVICE,
+        "اندروید" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})",
+        "اتصال فعلی" to getConnectionType(context)
+    )
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(rows) { (k, v) ->
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(Modifier.padding(16.dp)) {
+                    Text(k, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    Text(v, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+
+// ---------- منطق سیستمی ----------
+
 @Suppress("MissingPermission")
 private fun readSnapshot(context: Context): SignalSnapshot {
     val telephony = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-    val operator = runCatching { telephony.networkOperatorName }
-        .getOrNull()
-        .orEmpty()
-        .ifBlank { "نامشخص" }
+    val operator = runCatching { telephony.networkOperatorName }.getOrNull().orEmpty().ifBlank { "نامشخص" }
 
     val networkType = runCatching {
         when (telephony.dataNetworkType) {
             TelephonyManager.NETWORK_TYPE_NR -> "5G"
-            TelephonyManager.NETWORK_TYPE_LTE -> "4G / LTE"
+            TelephonyManager.NETWORK_TYPE_LTE -> "4G LTE"
             TelephonyManager.NETWORK_TYPE_HSPAP,
             TelephonyManager.NETWORK_TYPE_HSPA,
             TelephonyManager.NETWORK_TYPE_HSUPA,
-            TelephonyManager.NETWORK_TYPE_HSDPA -> "3G / HSPA"
+            TelephonyManager.NETWORK_TYPE_HSDPA -> "3G"
             TelephonyManager.NETWORK_TYPE_EDGE,
             TelephonyManager.NETWORK_TYPE_GPRS -> "2G"
-            TelephonyManager.NETWORK_TYPE_IWLAN -> "Wi‑Fi Calling"
             TelephonyManager.NETWORK_TYPE_UNKNOWN -> "نامشخص"
-            else -> "شبکهٔ دیگر"
+            else -> "دیگر"
         }
     }.getOrDefault("در دسترس نیست")
 
-    var strongestDbm: Int? = null
-    var cellText = "اطلاعات سلول در دسترس نیست"
+    var dbm: Int? = null
+    var cellText = "—"
     var error: String? = null
 
     try {
-        val hasLocation = hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ||
-            hasPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
-
-        if (!hasLocation) {
-            error = "برای قدرت سیگنال سلولی، مجوز موقعیت لازم است."
+        if (!hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) &&
+            !hasPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
+        ) {
+            error = "برای خواندن قدرت سیگنال سلولی، مجوز موقعیت را بدهید."
         } else {
             val cells: List<CellInfo> = telephony.allCellInfo.orEmpty()
             val registered = cells.filter { it.isRegistered }
-            val candidates = if (registered.isNotEmpty()) registered else cells
-
-            strongestDbm = candidates
-                .mapNotNull { runCatching { it.cellSignalStrength.dbm }.getOrNull() }
+            val pool = registered.ifEmpty { cells }
+            dbm = pool.mapNotNull { runCatching { it.cellSignalStrength.dbm }.getOrNull() }
                 .filter { it < 0 }
                 .maxOrNull()
-
-            val first = registered.firstOrNull() ?: cells.firstOrNull()
-            if (first != null) {
-                cellText = "${first.javaClass.simpleName}${if (first.isRegistered) " (متصل)" else ""}"
-            }
+            cellText = pool.firstOrNull()?.javaClass?.simpleName
+                ?.removePrefix("CellInfo")
+                ?: "—"
         }
     } catch (_: SecurityException) {
-        error = "مجوز لازم داده نشده یا دسترسی توسط دستگاه محدود شده است."
+        error = "دسترسی توسط سیستم محدود شده است."
     } catch (e: Exception) {
         error = e.localizedMessage ?: "خواندن اطلاعات سلول ممکن نشد."
     }
 
     return SignalSnapshot(
-        signalDbm = strongestDbm,
+        signalDbm = dbm,
         networkType = networkType,
         operator = operator,
         connection = getConnectionType(context),
@@ -368,11 +665,10 @@ private fun readSnapshot(context: Context): SignalSnapshot {
     )
 }
 
-private fun hasPermission(context: Context, permission: String): Boolean =
-    ContextCompat.checkSelfPermission(context, permission) ==
-        PackageManager.PERMISSION_GRANTED
+private fun hasPermission(context: Context, permission: String) =
+    ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
-private fun signalLabel(dbm: Int): String = when {
+private fun qualityLabel(dbm: Int) = when {
     dbm >= -80 -> "عالی"
     dbm >= -90 -> "خوب"
     dbm >= -100 -> "متوسط"
@@ -380,16 +676,23 @@ private fun signalLabel(dbm: Int): String = when {
     else -> "بسیار ضعیف"
 }
 
-private fun getConnectionType(context: Context): String {
-    val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    val network = manager.activeNetwork ?: return "بدون اتصال"
-    val caps = manager.getNetworkCapabilities(network) ?: return "نامشخص"
+private fun qualityColor(dbm: Int): Color = when {
+    dbm >= -80 -> Color(0xFF22C55E)
+    dbm >= -90 -> Color(0xFF84CC16)
+    dbm >= -100 -> Color(0xFFF59E0B)
+    dbm >= -110 -> Color(0xFFF97316)
+    else -> Color(0xFFEF4444)
+}
 
+private fun getConnectionType(context: Context): String {
+    val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    val network = cm.activeNetwork ?: return "بدون اتصال"
+    val caps = cm.getNetworkCapabilities(network) ?: return "نامشخص"
     return when {
         caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi‑Fi"
-        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "دادهٔ موبایل"
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "موبایل"
         caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
-        else -> "اتصال دیگر"
+        else -> "دیگر"
     }
 }
 
@@ -397,45 +700,39 @@ private fun openSettings(context: Context, action: String) {
     runCatching {
         context.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }.onFailure {
-        context.startActivity(
-            Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+        context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }
 
-private suspend fun runDownloadTest(): String = withContext(Dispatchers.IO) {
+private suspend fun runSpeedTest(): SpeedState = withContext(Dispatchers.IO) {
     var connection: HttpURLConnection? = null
-
     try {
-        val url = URL("https://speed.cloudflare.com/__down?bytes=5000000")
-        connection = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 12000
-            readTimeout = 20000
-            requestMethod = "GET"
+        val target = 5_000_000L
+        connection = (URL("https://speed.cloudflare.com/__down?bytes=$target")
+            .openConnection() as HttpURLConnection).apply {
+            connectTimeout = 12_000
+            readTimeout = 20_000
             setRequestProperty("Cache-Control", "no-cache")
         }
-
         val start = SystemClock.elapsedRealtime()
         var total = 0L
         val buffer = ByteArray(32 * 1024)
-
         connection.inputStream.use { input ->
-            while (total < 5_000_000L) {
-                val count = input.read(buffer)
-                if (count <= 0) break
-                total += count
+            while (total < target) {
+                val n = input.read(buffer)
+                if (n <= 0) break
+                total += n
             }
         }
-
         val seconds = ((SystemClock.elapsedRealtime() - start).coerceAtLeast(1)) / 1000.0
-        if (total == 0L) {
-            "داده‌ای دریافت نشد؛ اتصال یا دسترسی اینترنت را بررسی کنید."
-        } else {
-            val mbps = (total * 8.0 / seconds / 1_000_000.0)
-            "سرعت تقریبی دانلود: ${String.format(Locale.getDefault(), "%.2f", mbps)} Mbps"
-        }
+        val mbps = total * 8.0 / seconds / 1_000_000.0
+        SpeedState(
+            running = false,
+            mbps = mbps,
+            message = "آزمون کامل شد (${(total / 1_000_000)} MB)"
+        )
     } catch (e: Exception) {
-        "آزمون انجام نشد: ${e.localizedMessage ?: "اتصال را بررسی کنید"}"
+        SpeedState(running = false, message = "آزمون انجام نشد: ${e.localizedMessage ?: "اتصال را بررسی کنید"}")
     } finally {
         connection?.disconnect()
     }
